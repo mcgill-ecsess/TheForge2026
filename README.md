@@ -29,8 +29,8 @@ The goal is to replace fragile hardware joystick controllers with a reliable wir
 
 ## Arduino IDE
 
-1. Download the `Controller` folder.
-2. Zip the **outer `Controller` folder**.
+1. Download the `Controller` zipped-library from the `releases` section.
+2. Save the zip file to your computer.
 3. Open Arduino IDE.
 4. Go to:
 
