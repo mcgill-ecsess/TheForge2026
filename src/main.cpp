@@ -24,12 +24,15 @@ void setup() {
 
   ctrl.registerButton("Press ME", onPress);
 
+  ctrl.registerButton("Another Button", onPress);
+
   ctrl.enableStatusLED();
 
   // Optional: tune print throttle (default = 150ms)
   // ctrl.setMotorDebugPrintIntervalMs(150);
 
   ctrl.setFailsafeTimeoutMs(700);
+  ctrl.setMotorMinPWM(150);
 
   // Debug option is now an optional parameter in init:
   //   - true  => prints [MOTOR] debug lines

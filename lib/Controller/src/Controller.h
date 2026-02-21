@@ -45,6 +45,8 @@ public:
 
   void enableStatusLED(uint8_t pin = LED_BUILTIN);
 
+void setMotorMinPWM(uint8_t pwm);
+
 private:
 
 enum LedState {
@@ -76,7 +78,7 @@ enum LedState {
     // -------- L298N internals --------
     void motorInitSafeStop();
     void motorApply(int8_t left, int8_t right);
-    static void setMotorOne(uint8_t en, uint8_t inA, uint8_t inB, int8_t spd);
+    void setMotorOne(uint8_t en, uint8_t inA, uint8_t inB, int8_t spd);
     static void speedToCmd(int8_t spd, bool &forward, uint8_t &pwm);
     void debugMotors(int8_t left, int8_t right);
 
@@ -102,11 +104,15 @@ unsigned long _ledTimer = 0;
 bool _ledLevel = false;
 
 private:
+
+    uint8_t _motorMinPWM = 0;
+
     const char* _ssid;
     const char* _password;
 
     WiFiServer _server{80};
     int _status = WL_IDLE_STATUS;
+
 
     void (*_onMessage)(const String&) = nullptr;
     void (*_onDrive)(int8_t left, int8_t right) = nullptr;

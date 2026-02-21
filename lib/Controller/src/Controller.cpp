@@ -222,6 +222,9 @@ void Controller::printWiFiStatus() const {
     Serial.print(ip);
     Serial.println("/");
 }
+void Controller::setMotorMinPWM(uint8_t pwm) {
+    _motorMinPWM = pwm;
+}
 
 String Controller::readRequestLine(WiFiClient& client) {
     unsigned long start = millis();
@@ -492,6 +495,24 @@ void Controller::handleRoot(WiFiClient& client) {
     page += "<meta name='viewport' content='width=device-width,initial-scale=1'/>";
     page += "<title>Robot Controller</title>";
     page += "<style>";
+  page += "#thrRow{margin-top:10px;}";
+  page += ".thrHeader{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}";
+  page += ".thrLabel{font-size:16px;font-weight:600;}";
+  page += ".thrValue{font-size:16px;font-variant-numeric:tabular-nums;opacity:.9;}";
+
+// Make the slider easy to drag
+  page += "input.thr{width:100%;height:42px;-webkit-appearance:none;appearance:none;background:transparent;touch-action:none;}";
+
+// Track
+  page += "input.thr::-webkit-slider-runnable-track{height:12px;border-radius:999px;background:#ddd;border:1px solid #333;}";
+  page += "input.thr::-moz-range-track{height:12px;border-radius:999px;background:#ddd;border:1px solid #333;}";
+
+// Thumb (big + easy to grab)
+  page += "input.thr::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:34px;height:34px;border-radius:50%;background:#333;border:2px solid #fff;margin-top:-12px;box-shadow:0 2px 6px rgba(0,0,0,.25);}";
+  page += "input.thr::-moz-range-thumb{width:34px;height:34px;border-radius:50%;background:#333;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.25);}";
+
+// Optional: show active focus without ugly outline
+    page += "input.thr:focus{outline:none;}";
     page += "body{font-family:system-ui,Arial;margin:16px;}";
     page += "#wrap{max-width:520px;margin:0 auto;}";
     page += ".row{margin:14px 0;}";
@@ -513,12 +534,13 @@ void Controller::handleRoot(WiFiClient& client) {
 
     page += "<div class='row'><div id='joy'><div id='stick'></div></div></div>";
 
-    page += "<div class='row'>";
-    page += "<label>Throttle: <span id='tval'>100</span>%</label>";
-    page += "<input id='thr' type='range' min='0' max='100' value='100'/>";
-    page += "</div>";
-
-    page += "<div class='row'><div id='status'>loading...</div></div>";
+page += "<div class='row' id='thrRow'>";
+page += "  <div class='thrHeader'>";
+page += "    <div class='thrLabel'>Throttle</div>";
+page += "    <div class='thrValue'><span id='tval'>100</span>%</div>";
+page += "  </div>";
+page += "  <input id='thr' class='thr' type='range' min='0' max='100' value='100' step='1'/>";
+page += "</div>";
 
     // --- JS (STOP priority even if a request is in-flight) + HEARTBEAT resend ---
     page += "<script>";
@@ -682,6 +704,8 @@ void Controller::setMotorOne(uint8_t en, uint8_t inA, uint8_t inB, int8_t spd) {
     }
 
     int pwm = map(constrain(s, 0, 100), 0, 100, 0, 255);
+  // to prevent motor whining when starting from rest, we can enforce a minimum PWM threshold (tune as needed)
+    if (pwm > 0 && pwm < _motorMinPWM) pwm = _motorMinPWM;
     analogWrite(en, pwm);
 }
 
