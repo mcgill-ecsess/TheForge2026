@@ -31,10 +31,44 @@ void Controller::setFailsafeTimeoutMs(uint16_t ms) {
     _failsafeTimeoutMs = ms;
 }
 
-bool Controller::beginAP() {
+void Controller::configureL298N(
+    uint8_t ena, uint8_t in1, uint8_t in2,
+    uint8_t enb, uint8_t in3, uint8_t in4
+) {
+    _l298nEnabled = true;
+    _ena = ena; _in1 = in1; _in2 = in2;
+    _enb = enb; _in3 = in3; _in4 = in4;
+}
+
+void Controller::setMotorDebugPrintIntervalMs(uint16_t ms) {
+    _motorDebugPrintMs = ms;
+}
+
+bool Controller::beginAP(bool debug) {
+
+    if (_ledEnabled) setLedStateHold(LED_BOOTING, 1500);
+    _debug = debug;
+
+    if (_l298nEnabled) {
+        pinMode(_in1, OUTPUT); pinMode(_in2, OUTPUT);
+        pinMode(_in3, OUTPUT); pinMode(_in4, OUTPUT);
+        pinMode(_ena, OUTPUT); pinMode(_enb, OUTPUT);
+        motorInitSafeStop();
+    }
+
+    if (wifiSSIDExistsNearby()) { // _debug &&
+        Serial.print("[WiFi] NOTE: an AP with SSID already exists nearby: ");
+        Serial.println(_ssid);
+        if (_ledEnabled) setLedStateHold(LED_ERROR, 2000);
+        // If you want to abort instead of just warn, uncomment:
+        // return false;
+    }
+
     String fv = WiFi.firmwareVersion();
     if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
         Serial.println("Warning: WiFi firmware may be outdated. Consider upgrading.");
+        setLedStateForce(LED_ERROR);
+        setLedStateHold(LED_ERROR, 1000);
     }
 
     Serial.print("Starting AP: ");
@@ -46,8 +80,10 @@ bool Controller::beginAP() {
 
     if (_status != WL_AP_LISTENING && _status != WL_AP_CONNECTED) {
         Serial.println("Failed to start AP mode");
+        setLedStateForce(LED_ERROR);
         return false;
     }
+    setLedState(LED_AP_READY);
 
     delay(2000);
     _server.begin();
@@ -74,10 +110,12 @@ void Controller::update() {
     const unsigned long now = millis();
     if (_failsafeTimeoutMs > 0 && (now - _lastDriveMs) > _failsafeTimeoutMs) {
         _failsafeStopped = true;
+        setLedStateHold(LED_FAILSAFE, 1200);
     }
 
     // Apply smoothing and notify motors (also handles failsafe)
     applySmoothingAndNotify();
+    updateStatusLED();   // update the LED status (if enabled)
 }
 
 void Controller::applySmoothingAndNotify() {
@@ -90,15 +128,15 @@ void Controller::applySmoothingAndNotify() {
     int8_t targetR = _failsafeStopped ? 0 : applyDeadband(_cmdRight);
 
     auto stepToward = [&](int8_t cur, int8_t tgt) -> int8_t {
-    int d = (int)tgt - (int)cur;
+        int d = (int)tgt - (int)cur;
 
-    // Use a bigger step when we are braking toward zero
-    int step = (tgt == 0) ? (int)_slewPerUpdateStop : (int)_slewPerUpdate;
+        // Use a bigger step when we are braking toward zero
+        int step = (tgt == 0) ? (int)_slewPerUpdateStop : (int)_slewPerUpdate;
 
-    if (d > step) d = step;
-    if (d < -step) d = -step;
-    return (int8_t)((int)cur + d);
-};
+        if (d > step) d = step;
+        if (d < -step) d = -step;
+        return (int8_t)((int)cur + d);
+    };
 
     int8_t newL = stepToward(_outLeft, targetL);
     int8_t newR = stepToward(_outRight, targetR);
@@ -108,17 +146,68 @@ void Controller::applySmoothingAndNotify() {
     _outLeft = newL;
     _outRight = newR;
 
+    // Internal motor driver (if enabled)
+    if (_l298nEnabled) {
+        motorApply(_outLeft, _outRight);
+    }
+
+    // Optional external callback
     if (_onDrive) {
         _onDrive(_outLeft, _outRight);
     }
 }
 
-int8_t Controller::speedLeft() const {
-    return _outLeft;
+int8_t Controller::speedLeft() const { return _outLeft; }
+int8_t Controller::speedRight() const { return _outRight; }
+
+bool Controller::wifiSSIDExistsNearby() {
+    int n = WiFi.scanNetworks();
+    if (n < 0) return false;
+
+    for (int i = 0; i < n; i++) {
+        if (WiFi.SSID(i) == String(_ssid)) {
+            return true;
+        }
+    }
+    return false;
 }
 
-int8_t Controller::speedRight() const {
-    return _outRight;
+void Controller::debugWiFiScanForSSID()  {
+    Serial.println("[WiFi] Scanning for nearby networks...");
+    int n = WiFi.scanNetworks();
+    if (n < 0) {
+        Serial.println("[WiFi] scanNetworks() failed");
+        return;
+    }
+
+    Serial.print("[WiFi] Found ");
+    Serial.print(n);
+    Serial.println(" networks:");
+
+    bool foundSame = false;
+
+    for (int i = 0; i < n; i++) {
+        String s = WiFi.SSID(i);
+        int32_t rssi = WiFi.RSSI(i);
+
+        Serial.print("  - ");
+        Serial.print(s);
+        Serial.print("  RSSI=");
+        Serial.println(rssi);
+
+        if (s == String(_ssid)) foundSame = true;
+    }
+
+    if (foundSame) {
+        Serial.print("[WiFi] WARNING: SSID already present nearby: ");
+        setLedStateForce(LED_ERROR);
+        setLedStateHold(LED_ERROR, 2000);
+        Serial.println(_ssid);
+
+    } else {
+        Serial.print("[WiFi] OK: SSID not seen nearby: ");
+        Serial.println(_ssid);
+    }
 }
 
 void Controller::printWiFiStatus() const {
@@ -207,6 +296,7 @@ void Controller::handleClient(WiFiClient& client) {
 
     if (requestLine.startsWith("GET / ") || requestLine.startsWith("GET /?")) {
         handleRoot(client);
+        setLedStateHold(LED_CLIENT_CONNECTED, 2000);
         return;
     }
 
@@ -292,7 +382,94 @@ void Controller::handleDrive(WiFiClient& client, const String& requestLine) {
     _lastDriveMs = millis();
     _failsafeStopped = false;
 
+    setLedStateHold(LED_CLIENT_CONNECTED, 1000);
+
+    // Optional debug prints (beware: will spam if heartbeat is enabled)
+    // Serial.print("Drive: L="); Serial.print(_cmdLeft);
+    // Serial.print(" R="); Serial.println(_cmdRight);
+
     sendHttpOk(client, "text/plain; charset=utf-8", "OK");
+}
+
+void Controller::enableStatusLED(uint8_t pin) {
+    _ledPin = pin;
+    _ledEnabled = true;
+    pinMode(_ledPin, OUTPUT);
+    digitalWrite(_ledPin, LOW);
+}
+
+void Controller::setLedState(Controller::LedState s) {
+    if (!_ledEnabled) return;
+
+    unsigned long now = millis();
+    if (now < _ledHoldUntilMs) return;  // respect hold
+
+    _ledState = s;
+    _ledTimer = now;
+}
+
+void Controller::setLedStateHold(Controller::LedState s, uint16_t holdMs) {
+    if (!_ledEnabled) return;
+
+    unsigned long now = millis();
+    _ledState = s;
+    _ledTimer = now;
+    _ledHoldUntilMs = now + (unsigned long)holdMs;
+}
+
+void Controller::setLedStateForce(Controller::LedState s) {
+    if (!_ledEnabled) return;
+
+    unsigned long now = millis();
+    _ledHoldUntilMs = 0;      // clear hold
+    _ledState = s;
+    _ledTimer = now;
+}
+
+void Controller::updateStatusLED() {
+    if (!_ledEnabled) return;
+
+    unsigned long now = millis();
+
+    switch (_ledState) {
+
+        case LED_BOOTING:
+            if (now - _ledTimer > 100) {
+                _ledTimer = now;
+                _ledLevel = !_ledLevel;
+                digitalWrite(_ledPin, _ledLevel);
+            }
+            break;
+
+        case LED_AP_READY:
+            if (now - _ledTimer > 500) {
+                _ledTimer = now;
+                _ledLevel = !_ledLevel;
+                digitalWrite(_ledPin, _ledLevel);
+            }
+            break;
+
+        case LED_CLIENT_CONNECTED:
+            digitalWrite(_ledPin, HIGH);
+            break;
+
+        case LED_FAILSAFE:
+            // double blink pattern
+            if (now - _ledTimer > 150) {
+                _ledTimer = now;
+                _ledLevel = !_ledLevel;
+                digitalWrite(_ledPin, _ledLevel);
+            }
+            break;
+
+        case LED_ERROR:
+            if (now - _ledTimer > 70) {
+                _ledTimer = now;
+                _ledLevel = !_ledLevel;
+                digitalWrite(_ledPin, _ledLevel);
+            }
+            break;
+    }
 }
 
 void Controller::handleRoot(WiFiClient& client) {
@@ -309,7 +486,7 @@ void Controller::handleRoot(WiFiClient& client) {
     }
 
     String page;
-    page.reserve(6500);
+    page.reserve(7500);
 
     page += "<!doctype html><html><head><meta charset='utf-8'/>";
     page += "<meta name='viewport' content='width=device-width,initial-scale=1'/>";
@@ -343,8 +520,7 @@ void Controller::handleRoot(WiFiClient& client) {
 
     page += "<div class='row'><div id='status'>loading...</div></div>";
 
-     // --- JS (updated: "one request in flight", send-on-change, no backlog) ---
-    // --- JS (updated: STOP priority even if a request is in-flight) ---
+    // --- JS (STOP priority even if a request is in-flight) + HEARTBEAT resend ---
     page += "<script>";
     page += "let x=0,y=0,t=100;";
     page += "const joy=document.getElementById('joy');";
@@ -366,27 +542,41 @@ void Controller::handleRoot(WiFiClient& client) {
     page += "  });";
     page += "});";
 
-    // --- Drive send logic: 1 in-flight, BUT stop (x=0,y=0) has priority ---
+    // --- Drive send logic: 1 in-flight, STOP priority, + heartbeat keepalive ---
     page += "let inFlight=false;";
     page += "let pending=false;";
     page += "let lastSentX=999,lastSentY=999,lastSentT=999;";
+    page += "let lastSendMs=0;";
+    page += "const HEARTBEAT_MS=200;";
 
-    page += "function sendDriveNow(){";
-    page += "  if (x===lastSentX && y===lastSentY && t===lastSentT) return;";
+    page += "function sendDriveNow(force=false){";
+    page += "  const now=Date.now();";
+    page += "  const same = (x===lastSentX && y===lastSentY && t===lastSentT);";
+    page += "  if (!force && same && (now - lastSendMs) < HEARTBEAT_MS) return;";
     page += "  const isStop = (x===0 && y===0);";
+
+    // Keep your existing throttle rule, but allow heartbeat sends too
     page += "  if (inFlight && !isStop){ pending=true; return; }";
     page += "  if (!isStop){ inFlight=true; pending=false; }";
-    page += "  const url=`/drive?x=${x}&y=${y}&t=${t}&_=${Date.now()}`;";
+
+    page += "  const url=`/drive?x=${x}&y=${y}&t=${t}&_=${now}`;";
+    page += "  lastSendMs=now;";
+
     page += "  fetch(url,{cache:'no-store', keepalive:true})";
     page += "    .catch(()=>{})";
     page += "    .finally(()=>{";
     page += "      lastSentX=x; lastSentY=y; lastSentT=t;";
     page += "      if (!isStop){";
     page += "        inFlight=false;";
-    page += "        if (pending) sendDriveNow();";
+    page += "        if (pending) sendDriveNow(true);";
     page += "      }";
     page += "    });";
     page += "}";
+
+    // Heartbeat: keep sending while held away from center (prevents failsafe)
+    page += "setInterval(()=>{";
+    page += "  if (x!==0 || y!==0) sendDriveNow(false);";
+    page += "}, HEARTBEAT_MS);";
 
     // Joystick mapping
     page += "function posToXY(clientX,clientY){";
@@ -404,7 +594,7 @@ void Controller::handleRoot(WiFiClient& client) {
     page += "  if (Math.abs(y) < 4) y=0;";
     page += "  setStick(r.width/2 + ndx, r.height/2 + ndy);";
     page += "  updateStatus();";
-    page += "  sendDriveNow();";
+    page += "  sendDriveNow(true);"; // force immediate send on changes
     page += "}";
 
     page += "let dragging=false;";
@@ -422,14 +612,14 @@ void Controller::handleRoot(WiFiClient& client) {
     page += "  x=0; y=0;";
     page += "  setStick(130,130);";
     page += "  updateStatus('released');";
-    page += "  sendDriveNow();";
+    page += "  sendDriveNow(true);"; // force STOP send
     page += "});";
     page += "joy.addEventListener('pointercancel',()=>{";
     page += "  dragging=false;";
     page += "  x=0; y=0;";
     page += "  setStick(130,130);";
     page += "  updateStatus('cancel');";
-    page += "  sendDriveNow();";
+    page += "  sendDriveNow(true);"; // force STOP send
     page += "});";
 
     // Slider
@@ -437,16 +627,97 @@ void Controller::handleRoot(WiFiClient& client) {
     page += "  t=parseInt(thr.value,10)||0;";
     page += "  tval.textContent=t;";
     page += "  updateStatus('slider');";
-    page += "  sendDriveNow();";
+    page += "  sendDriveNow(true);";
     page += "});";
 
     page += "updateStatus('ready');";
-    page += "sendDriveNow();";
+    page += "sendDriveNow(true);";
     page += "</script>";
-
-
 
     page += "</div></body></html>";
 
     sendHttpOk(client, "text/html; charset=utf-8", page);
+}
+
+// -------------------- L298N implementation --------------------
+
+void Controller::motorInitSafeStop() {
+    // Ensure stopped at boot (BRAKE)
+    digitalWrite(_in1, HIGH);
+    digitalWrite(_in2, HIGH);
+    analogWrite(_ena, 0);
+
+    digitalWrite(_in3, HIGH);
+    digitalWrite(_in4, HIGH);
+    analogWrite(_enb, 0);
+}
+
+void Controller::speedToCmd(int8_t spd, bool &forward, uint8_t &pwm) {
+    int s = spd; // -100..100
+    if (s >= 0) {
+        forward = true;
+    } else {
+        forward = false;
+        s = -s;
+    }
+    s = constrain(s, 0, 100);
+    pwm = (uint8_t)map(s, 0, 100, 0, 255);
+}
+
+void Controller::setMotorOne(uint8_t en, uint8_t inA, uint8_t inB, int8_t spd) {
+    int s = spd;
+    if (s > 0) {
+        digitalWrite(inA, HIGH);
+        digitalWrite(inB, LOW);
+    } else if (s < 0) {
+        digitalWrite(inA, LOW);
+        digitalWrite(inB, HIGH);
+        s = -s;
+    } else {
+        // BRAKE (stops faster than coast)
+        digitalWrite(inA, HIGH);
+        digitalWrite(inB, HIGH);
+        analogWrite(en, 0);
+        return;
+    }
+
+    int pwm = map(constrain(s, 0, 100), 0, 100, 0, 255);
+    analogWrite(en, pwm);
+}
+
+void Controller::debugMotors(int8_t left, int8_t right) {
+    if (!_debug) return;
+
+    const unsigned long now = millis();
+    const bool changed = (left != _lastDbgL) || (right != _lastDbgR);
+    const bool timeOk  = (now - _lastDbgPrintMs) >= _motorDebugPrintMs;
+
+    if (!changed && !timeOk) return;
+
+    bool lfwd, rfwd;
+    uint8_t lpwm, rpwm;
+    speedToCmd(left, lfwd, lpwm);
+    speedToCmd(right, rfwd, rpwm);
+
+    Serial.print("[MOTOR] L=");
+    Serial.print(left);
+    Serial.print(lfwd ? " FWD " : " REV ");
+    Serial.print("PWM=");
+    Serial.print(lpwm);
+
+    Serial.print(" | R=");
+    Serial.print(right);
+    Serial.print(rfwd ? " FWD " : " REV ");
+    Serial.print("PWM=");
+    Serial.println(rpwm);
+
+    _lastDbgL = left;
+    _lastDbgR = right;
+    _lastDbgPrintMs = now;
+}
+
+void Controller::motorApply(int8_t left, int8_t right) {
+    debugMotors(left, right);
+    setMotorOne(_ena, _in1, _in2, left);
+    setMotorOne(_enb, _in3, _in4, right);
 }

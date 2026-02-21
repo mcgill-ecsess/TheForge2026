@@ -22,3 +22,12 @@ To initialize the controller, you can use the following code in your `setup()` f
 Controller controller("SSID", "password");
 ```
 
+The failsafe functionality is meant to ensure that the robot stops moving when the joystick is released. This is achieved by sending a 0 value to the motors when the joystick is released. The motors will only move when the joystick is being moved, and will stop immediately when the joystick is released. This is a safety feature to prevent the robot from moving uncontrollably if the connection is lost or if the user accidentally releases the joystick.
+The timeout can be set with 
+```
+cppcontroller.setFailsafeTimeoutMs(5000); // Set timeout to 5 seconds
+```
+
+Need to turn off battery when connecting the R4 to computer IF it was on on battery before (Does a soft reboot)
+
+The smaller the failsafe timeout the more "bumpy" the robot will be. When increasing the failsafe timeout, the robot will stay in the direction longer

@@ -12,13 +12,15 @@ class Controller {
 public:
     Controller(const char* ssid, const char* password);
 
-    bool beginAP();
+    // Start AP + HTTP server (optional debug flag for prints)
+    bool beginAP(bool debug = false);
     void update();
 
-    // Generic message callback (optional)
+    // Optional generic message callback
     void registerCallback(void (*callback)(const String&));
 
-    // Called whenever smoothed motor outputs change
+    // Optional: called whenever smoothed motor outputs change
+    // (Still available even if L298N is configured internally)
     void registerDriveCallback(void (*callback)(int8_t left, int8_t right));
 
     // Smoothed motor outputs (-100..100)
@@ -31,7 +33,27 @@ public:
     bool registerButton(const char* label, void (*cb)());
     void clearButtons();
 
+    // -------- L298N integration (optional) --------
+    // Call this before beginAP() to let the library drive motors automatically.
+    void configureL298N(
+        uint8_t ena, uint8_t in1, uint8_t in2,
+        uint8_t enb, uint8_t in3, uint8_t in4
+    );
+
+    // Optional tuning for motor debug printing
+    void setMotorDebugPrintIntervalMs(uint16_t ms);
+
+  void enableStatusLED(uint8_t pin = LED_BUILTIN);
+
 private:
+
+enum LedState {
+    LED_BOOTING,
+    LED_AP_READY,
+    LED_CLIENT_CONNECTED,
+    LED_FAILSAFE,
+    LED_ERROR
+};
     void printWiFiStatus() const;
 
     void handleClient(WiFiClient& client);
@@ -50,6 +72,34 @@ private:
     static int clampInt(int v, int lo, int hi);
 
     void applySmoothingAndNotify();
+
+    // -------- L298N internals --------
+    void motorInitSafeStop();
+    void motorApply(int8_t left, int8_t right);
+    static void setMotorOne(uint8_t en, uint8_t inA, uint8_t inB, int8_t spd);
+    static void speedToCmd(int8_t spd, bool &forward, uint8_t &pwm);
+    void debugMotors(int8_t left, int8_t right);
+
+    // --- WiFi debug helpers (enabled when beginAP(debug=true)) --- // removed CONST
+    void debugWiFiScanForSSID() ;
+    bool wifiSSIDExistsNearby() ;
+
+// LED "hold" mechanism (non-blocking)
+unsigned long _ledHoldUntilMs = 0;
+
+void setLedStateHold(LedState s, uint16_t holdMs);
+void setLedStateForce(LedState s); // bypass hold (for critical transitions)
+
+// ---- LED status ----
+
+void updateStatusLED();
+void setLedState(LedState s);
+
+uint8_t _ledPin = 255;
+bool _ledEnabled = false;
+LedState _ledState = LED_BOOTING;
+unsigned long _ledTimer = 0;
+bool _ledLevel = false;
 
 private:
     const char* _ssid;
@@ -89,6 +139,20 @@ private:
 
     ButtonReg _buttons[MAX_BUTTONS];
     uint8_t _buttonCount = 0;
+
+    // -------- L298N config --------
+    bool _l298nEnabled = false;
+    uint8_t _ena = 255, _in1 = 255, _in2 = 255;
+    uint8_t _enb = 255, _in3 = 255, _in4 = 255;
+
+    // Debug options (enabled via beginAP(debug=true))
+    bool _debug = false;
+
+    // Motor debug throttling
+    uint16_t _motorDebugPrintMs = 150;
+    int8_t _lastDbgL = 127;
+    int8_t _lastDbgR = 127;
+    unsigned long _lastDbgPrintMs = 0;
 };
 
 #endif // THEFORGE2026_CONTROLLER_H
